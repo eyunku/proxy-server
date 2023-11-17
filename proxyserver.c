@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "safequeue.h"
 #include "proxyserver.h"
 
 
@@ -45,9 +46,10 @@ void send_error_response(int client_fd, status_code_t err_code, char *err_msg) {
 }
 
 /*
- * forward the client request to the fileserver and
- * forward the fileserver response to the client
+ * The priority queue to hold the work items.
  */
+priority_queue_t *work_queue;
+
 void serve_request(int client_fd) {
 
     // create a fileserver socket
@@ -104,6 +106,67 @@ void serve_request(int client_fd) {
     free(buffer);
 }
 
+/*
+ * Listener Thread Modification:
+ * Remove the serve_request function and replace it with queuing logic:
+ * enqueue(client_fd, priority). Do not perform shutdown or close in the listener thread.
+ */
+void *listener_thread(void *arg) {
+    int server_fd = *((int *)arg);
+    struct sockaddr_in client_address;
+    size_t client_address_length = sizeof(client_address);
+
+    while (1) {
+        int client_fd = accept(server_fd,
+                               (struct sockaddr *)&client_address,
+                               (socklen_t *)&client_address_length);
+        if (client_fd < 0) {
+            perror("Error accepting socket");
+            continue;
+        }
+
+        printf("Accepted connection from %s on port %d\n",
+               inet_ntoa(client_address.sin_addr),
+               client_address.sin_port);
+
+        
+        // Use recv with MSG_PEEK to inspect the incoming data without consuming it
+        char peek_buffer[RESPONSE_BUFSIZE];
+        recv(client_fd, peek_buffer, RESPONSE_BUFSIZE - 1, MSG_PEEK);
+
+        // Extract the priority from the request path
+        int priority;
+        sscanf(peek_buffer, "GET /%d/", &priority);
+
+        // Enqueue the work item into the priority queue
+        add_work(work_queue, priority, client_fd);
+    }
+
+    pthread_exit(NULL);
+}
+
+/*
+ * Worker Thread Modification:
+ * Modify serve_request to accept no arguments (void).
+ * Inside the implementation, dequeue a work item (work_item = dequeue())
+ * and obtain the client file descriptor (int client_fd = work_item->data).
+ */
+void *worker_thread(void *arg) {
+    while (1) {
+        // Call http_send_data without worrying about its implementation
+        printf("Waiting for work...\n");
+        work_item_t work_item = get_work(work_queue);
+        int client_fd = work_item.data;
+
+        serve_request(client_fd);
+
+        // Close the connection to the client
+        // shutdown(client_fd, SHUT_WR);
+        // close(client_fd);
+    }
+
+    pthread_exit(NULL);
+}
 
 int server_fd;
 /*
@@ -152,27 +215,31 @@ void serve_forever(int *server_fd) {
 
     printf("Listening on port %d...\n", proxy_port);
 
-    struct sockaddr_in client_address;
-    size_t client_address_length = sizeof(client_address);
-    int client_fd;
-    while (1) {
-        client_fd = accept(*server_fd,
-                           (struct sockaddr *)&client_address,
-                           (socklen_t *)&client_address_length);
-        if (client_fd < 0) {
-            perror("Error accepting socket");
-            continue;
-        }
+    
+    // Create the work queue
+    work_queue = create_queue(max_queue_size);
 
-        printf("Accepted connection from %s on port %d\n",
-               inet_ntoa(client_address.sin_addr),
-               client_address.sin_port);
+    // Create listener threads
+    pthread_t listener_threads[num_listener];
+    for (int i = 0; i < num_listener; i++) {
+        pthread_create(&listener_threads[i], NULL, listener_thread, (void *)server_fd);
+    }
 
-        serve_request(client_fd);
+    // Create worker threads
+    pthread_t worker_threads[num_workers];
+    for (int i = 0; i < num_workers; i++) {
+        pthread_create(&worker_threads[i], NULL, worker_thread, NULL);
+    }
 
-        // close the connection to the client
-        shutdown(client_fd, SHUT_WR);
-        close(client_fd);
+    // Join listener threads
+    for (int i = 0; i < num_listener; i++) {
+        pthread_join(listener_threads[i], NULL);
+    }
+
+    // Cleanup work queue and join worker threads
+    cleanup_queue(work_queue);
+    for (int i = 0; i < num_workers; i++) {
+        pthread_join(worker_threads[i], NULL);
     }
 
     shutdown(*server_fd, SHUT_RDWR);
