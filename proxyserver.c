@@ -107,17 +107,52 @@ void serve_request(int client_fd) {
 }
 
 /*
- * Listener Thread Modification:
+ * Listener Thread Modifications to original implementation:
  * Remove the serve_request function and replace it with queuing logic:
  * enqueue(client_fd, priority). Do not perform shutdown or close in the listener thread.
  */
 void *listener_thread(void *arg) {
-    int server_fd = *((int *)arg);
+    int listener_fd = socket(PF_INET, SOCK_STREAM, 0);
+    if (listener_fd == -1) {
+        perror("Failed to create a new listener socket");
+        exit(errno);
+    }
+
+    // manipulate options for the socket
+    int socket_option = 1;
+    if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR, &socket_option,
+                   sizeof(socket_option)) == -1) {
+        perror("Failed to set listener socket options");
+        exit(errno);
+    }
+
+    int listener_port = *((int *)arg);
+
+    // create the full address for this listener
+    struct sockaddr_in listener_address;
+    memset(&listener_address, 0, sizeof(listener_address));
+    listener_address.sin_family = AF_INET;
+    listener_address.sin_addr.s_addr = INADDR_ANY;
+    listener_address.sin_port = htons(listener_port);
+
+    // bind the listener socket to the address and port number specified
+    if (bind(listener_fd, (struct sockaddr *)&listener_address,
+             sizeof(listener_address)) == -1) {
+        perror("Failed to bind listener socket");
+        exit(errno);
+    }
+
+    // starts waiting for the client to request a connection
+    if (listen(listener_fd, 1024) == -1) {
+        perror("Failed to listen on listener socket");
+        exit(errno);
+    }
+
     struct sockaddr_in client_address;
     size_t client_address_length = sizeof(client_address);
 
     while (1) {
-        int client_fd = accept(server_fd,
+        int client_fd = accept(listener_fd,
                                (struct sockaddr *)&client_address,
                                (socklen_t *)&client_address_length);
         if (client_fd < 0) {
@@ -129,7 +164,6 @@ void *listener_thread(void *arg) {
                inet_ntoa(client_address.sin_addr),
                client_address.sin_port);
 
-        
         // Use recv with MSG_PEEK to inspect the incoming data without consuming it
         char peek_buffer[RESPONSE_BUFSIZE];
         recv(client_fd, peek_buffer, RESPONSE_BUFSIZE - 1, MSG_PEEK);
@@ -142,11 +176,12 @@ void *listener_thread(void *arg) {
         add_work(work_queue, priority, client_fd);
     }
 
+    close(listener_fd);
     pthread_exit(NULL);
 }
 
 /*
- * Worker Thread Modification:
+ * Worker Thread Modifications to original implementation:
  * Modify serve_request to accept no arguments (void).
  * Inside the implementation, dequeue a work item (work_item = dequeue())
  * and obtain the client file descriptor (int client_fd = work_item->data).
@@ -161,8 +196,8 @@ void *worker_thread(void *arg) {
         serve_request(client_fd);
 
         // Close the connection to the client
-        // shutdown(client_fd, SHUT_WR);
-        // close(client_fd);
+        shutdown(client_fd, SHUT_WR);
+        close(client_fd);
     }
 
     pthread_exit(NULL);
@@ -175,54 +210,15 @@ int server_fd;
  * connection, calls request_handler with the accepted fd number.
  */
 void serve_forever(int *server_fd) {
-
-    // create a socket to listen
-    *server_fd = socket(PF_INET, SOCK_STREAM, 0);
-    if (*server_fd == -1) {
-        perror("Failed to create a new socket");
-        exit(errno);
-    }
-
-    // manipulate options for the socket
-    int socket_option = 1;
-    if (setsockopt(*server_fd, SOL_SOCKET, SO_REUSEADDR, &socket_option,
-                   sizeof(socket_option)) == -1) {
-        perror("Failed to set socket options");
-        exit(errno);
-    }
-
-
-    int proxy_port = listener_ports[0];
-    // create the full address of this proxyserver
-    struct sockaddr_in proxy_address;
-    memset(&proxy_address, 0, sizeof(proxy_address));
-    proxy_address.sin_family = AF_INET;
-    proxy_address.sin_addr.s_addr = INADDR_ANY;
-    proxy_address.sin_port = htons(proxy_port); // listening port
-
-    // bind the socket to the address and port number specified in
-    if (bind(*server_fd, (struct sockaddr *)&proxy_address,
-             sizeof(proxy_address)) == -1) {
-        perror("Failed to bind on socket");
-        exit(errno);
-    }
-
-    // starts waiting for the client to request a connection
-    if (listen(*server_fd, 1024) == -1) {
-        perror("Failed to listen on socket");
-        exit(errno);
-    }
-
-    printf("Listening on port %d...\n", proxy_port);
-
-    
     // Create the work queue
     work_queue = create_queue(max_queue_size);
 
     // Create listener threads
     pthread_t listener_threads[num_listener];
     for (int i = 0; i < num_listener; i++) {
-        pthread_create(&listener_threads[i], NULL, listener_thread, (void *)server_fd);
+        int *listener_port = malloc(sizeof(int));
+        *listener_port = listener_ports[i];
+        pthread_create(&listener_threads[i], NULL, listener_thread, (void *)listener_port);
     }
 
     // Create worker threads
@@ -231,10 +227,11 @@ void serve_forever(int *server_fd) {
         pthread_create(&worker_threads[i], NULL, worker_thread, NULL);
     }
 
-    // Join listener threads
+    // Join listener threads and free allocated memory
     for (int i = 0; i < num_listener; i++) {
         pthread_join(listener_threads[i], NULL);
     }
+    free(listener_ports);
 
     // Cleanup work queue and join worker threads
     cleanup_queue(work_queue);
