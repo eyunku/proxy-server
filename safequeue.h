@@ -20,4 +20,4 @@ work_item_t get_work(priority_queue_t *queue);
 int get_work_nonblocking(priority_queue_t *queue, work_item_t *item);
 void cleanup_queue(priority_queue_t *queue);
 
-#endif
+#endif // SAFEQUEUE_H
