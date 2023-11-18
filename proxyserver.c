@@ -216,6 +216,8 @@ void *listener_thread(void *arg) {
         if (add_work(work_queue, priority, client_fd, delay, path) == -1) {
             // Queue is full, send an error response to the client
             send_error_response(client_fd, QUEUE_FULL, "Queue is full");
+            // Close the connection to the client
+            shutdown(client_fd, SHUT_WR);
             close(client_fd);
         }
     }
