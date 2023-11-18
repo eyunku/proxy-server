@@ -106,6 +106,28 @@ void serve_request(int client_fd) {
     free(buffer);
 }
 
+void handle_get_job_request(int client_fd) {
+    work_item_t work_item;
+
+    if (!get_work_nonblocking(work_queue, &work_item)) {
+        // Queue is empty, send an error response to the client
+        send_error_response(client_fd, QUEUE_EMPTY, "Queue is empty");
+        // Close the connection to the client
+        shutdown(client_fd, SHUT_WR);
+        close(client_fd);
+    } else {
+        // Queue is not empty, send the path in the response body
+        http_start_response(client_fd, OK);
+        http_send_header(client_fd, "Content-Type", "text/plain");
+        http_end_headers(client_fd);
+        http_send_string(client_fd, work_item.path);
+
+        // Close the connection to the client
+        shutdown(client_fd, SHUT_WR);
+        close(client_fd);
+    }
+}
+
 /*
  * Listener Thread Modifications to original implementation:
  * Remove the serve_request function and replace it with queuing logic:
@@ -163,17 +185,38 @@ void *listener_thread(void *arg) {
         printf("Accepted connection from %s on port %d\n",
                inet_ntoa(client_address.sin_addr),
                client_address.sin_port);
-
+       
         // Use recv with MSG_PEEK to inspect the incoming data without consuming it
         char peek_buffer[RESPONSE_BUFSIZE];
-        recv(client_fd, peek_buffer, RESPONSE_BUFSIZE - 1, MSG_PEEK);
-
+        int bytes_read = recv(client_fd, peek_buffer, RESPONSE_BUFSIZE - 1, MSG_PEEK);
+        peek_buffer[bytes_read] = '\0';
+        // Check if the request contains the GetJob command
+        if (strstr(peek_buffer, GETJOBCMD) != NULL) {
+            handle_get_job_request(client_fd);
+            continue;
+        }
         // Extract the priority from the request path
-        int priority;
-        sscanf(peek_buffer, "GET /%d/", &priority);
+        int priority = 0, delay = 0;
+        char path[RESPONSE_BUFSIZE];
+        
+        sscanf(peek_buffer, "GET %s", path);
 
-        // Enqueue the work item into the priority queue
-        add_work(work_queue, priority, client_fd);
+        char *priority_start = strstr(peek_buffer, "GET /");
+        if (priority_start != NULL) {
+            sscanf(priority_start, "GET /%d/", &priority);
+        }
+
+        char *delay_start = strstr(peek_buffer, "Delay: ");
+        if (delay_start != NULL) {
+            sscanf(delay_start, "Delay: %d", &delay);
+        } 
+        // Try to enqueue the work item into the priority queue
+        if (add_work(work_queue, priority, client_fd, delay, path) == -1) {
+            printf("adding to queue\n");
+            // Queue is full, send an error response to the client
+            send_error_response(client_fd, QUEUE_FULL, "Queue is full");
+            close(client_fd);
+        }
     }
 
     close(listener_fd);
@@ -192,6 +235,13 @@ void *worker_thread(void *arg) {
         printf("Waiting for work...\n");
         work_item_t work_item = get_work(work_queue);
         int client_fd = work_item.data;
+        int delay = work_item.delay;
+
+        // Sleep for the specified delay if it's greater than 0
+        if (delay > 0) {
+            printf("Delaying for %d seconds...\n", delay);
+            sleep(delay);
+        }
 
         serve_request(client_fd);
 

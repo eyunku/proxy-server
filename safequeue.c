@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <string.h>
 
 #include "safequeue.h"
 
@@ -29,13 +30,13 @@ priority_queue_t *create_queue(int capacity) {
 }
 
 // Add work to the priority queue
-void add_work(priority_queue_t *queue, int priority, int data) {
+int add_work(priority_queue_t *queue, int priority, int client_fd, int delay, const char *path) {
     pthread_mutex_lock(&queue->mutex);
 
     if (queue->size == queue->capacity) {
-        // Handle queue full condition (You can adjust this based on your error handling logic)
-        perror("Priority queue is full");
-        exit(EXIT_FAILURE);
+        // Queue is full, return an error code
+        pthread_mutex_unlock(&queue->mutex);
+        return -1;
     }
 
     // Find the position to insert the new work item based on priority
@@ -51,11 +52,15 @@ void add_work(priority_queue_t *queue, int priority, int data) {
 
     // Insert the new work item
     queue->array[index].priority = priority;
-    queue->array[index].data = data;
+    queue->array[index].data = client_fd;
+    queue->array[index].delay = delay;
+    strncpy(queue->array[index].path, path, RESPONSE_BUFSIZE);
     queue->size++;
 
     pthread_cond_signal(&queue->cond);
     pthread_mutex_unlock(&queue->mutex);
+
+    return 0; // Return 0 to indicate success
 }
 
 // Get the job with the highest priority
