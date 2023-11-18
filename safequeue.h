@@ -1,12 +1,12 @@
 #ifndef SAFEQUEUE_H
 #define SAFEQUEUE_H
-#define RESPONSE_BUFSIZE 10000
+#define MAX_PATHSIZE 128
 
 typedef struct {
     int priority;
-    int data; // client_fd
+    int data;
     int delay;
-    char path[RESPONSE_BUFSIZE]; // New field to store the path
+    char path[MAX_PATHSIZE];
 } work_item_t;
 
 

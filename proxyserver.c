@@ -195,7 +195,7 @@ void *listener_thread(void *arg) {
 
         // Extract the priority, delay, and path from the request
         int priority = 0, delay = 0;
-        char path[RESPONSE_BUFSIZE];
+        char path[MAX_PATHSIZE];
 
         // Extract the path from the request
         sscanf(peek_buffer, "GET %s", path);

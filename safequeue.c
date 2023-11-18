@@ -54,7 +54,7 @@ int add_work(priority_queue_t *queue, int priority, int client_fd, int delay, co
     queue->array[index].priority = priority;
     queue->array[index].data = client_fd;
     queue->array[index].delay = delay;
-    strncpy(queue->array[index].path, path, RESPONSE_BUFSIZE);
+    strncpy(queue->array[index].path, path, MAX_PATHSIZE);
     queue->size++;
 
     pthread_cond_signal(&queue->cond);
