@@ -112,20 +112,16 @@ void handle_get_job_request(int client_fd) {
     if (!get_work_nonblocking(work_queue, &work_item)) {
         // Queue is empty, send an error response to the client
         send_error_response(client_fd, QUEUE_EMPTY, "Queue is empty");
-        // Close the connection to the client
-        shutdown(client_fd, SHUT_WR);
-        close(client_fd);
     } else {
         // Queue is not empty, send the path in the response body
         http_start_response(client_fd, OK);
         http_send_header(client_fd, "Content-Type", "text/plain");
         http_end_headers(client_fd);
         http_send_string(client_fd, work_item.path);
-
-        // Close the connection to the client
-        shutdown(client_fd, SHUT_WR);
-        close(client_fd);
     }
+    // Close the connection to the client
+    shutdown(client_fd, SHUT_WR);
+    close(client_fd);
 }
 
 /*
@@ -186,33 +182,38 @@ void *listener_thread(void *arg) {
                inet_ntoa(client_address.sin_addr),
                client_address.sin_port);
        
-        // Use recv with MSG_PEEK to inspect the incoming data without consuming it
+        // Use recv with MSG_PEEK to inspect incoming data without consuming it
         char peek_buffer[RESPONSE_BUFSIZE];
         int bytes_read = recv(client_fd, peek_buffer, RESPONSE_BUFSIZE - 1, MSG_PEEK);
         peek_buffer[bytes_read] = '\0';
+
         // Check if the request contains the GetJob command
         if (strstr(peek_buffer, GETJOBCMD) != NULL) {
             handle_get_job_request(client_fd);
             continue;
         }
-        // Extract the priority from the request path
+
+        // Extract the priority, delay, and path from the request
         int priority = 0, delay = 0;
         char path[RESPONSE_BUFSIZE];
-        
+
+        // Extract the path from the request
         sscanf(peek_buffer, "GET %s", path);
 
+        // Extract priority from the request path
         char *priority_start = strstr(peek_buffer, "GET /");
         if (priority_start != NULL) {
             sscanf(priority_start, "GET /%d/", &priority);
         }
 
+        // Extract delay from the request
         char *delay_start = strstr(peek_buffer, "Delay: ");
         if (delay_start != NULL) {
             sscanf(delay_start, "Delay: %d", &delay);
-        } 
+        }
+
         // Try to enqueue the work item into the priority queue
         if (add_work(work_queue, priority, client_fd, delay, path) == -1) {
-            printf("adding to queue\n");
             // Queue is full, send an error response to the client
             send_error_response(client_fd, QUEUE_FULL, "Queue is full");
             close(client_fd);
